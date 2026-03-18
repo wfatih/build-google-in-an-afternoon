@@ -134,6 +134,15 @@ td{padding:.4rem;border-bottom:1px solid #111;color:#c0c0c0;word-break:break-all
     </table>
   </div>
 
+  <!-- Session history -->
+  <div class="card wide">
+    <h2>Crawl History</h2>
+    <table>
+      <thead><tr><th>#</th><th>Origin</th><th>Depth</th><th>Started</th><th>Duration</th><th>Pages</th><th>Processed</th><th>Failed</th><th>Status</th></tr></thead>
+      <tbody id="stbody"></tbody>
+    </table>
+  </div>
+
 </div>
 <script>
 let maxQ=500;
@@ -211,9 +220,29 @@ function showMsg(id,txt,cls){
   setTimeout(()=>{document.getElementById(id).innerHTML='';},5000);
 }
 
+async function refreshSessions(){
+  try{
+    const sessions=await (await fetch('/api/sessions')).json();
+    const tb=document.getElementById('stbody');
+    if(!sessions||sessions.length===0){
+      tb.innerHTML='<tr><td colspan="9" style="color:#555;text-align:center;padding:.75rem">No crawl sessions yet</td></tr>';return;
+    }
+    tb.innerHTML=sessions.map(s=>{
+      const started=new Date(s.started_at*1000).toLocaleString();
+      const dur=s.finished_at?((s.finished_at-s.started_at).toFixed(1)+'s'):'running';
+      const badge=s.status==='running'?'<span class="badge b-active">running</span>':'<span class="badge b-idle">done</span>';
+      return `<tr><td style="color:#555">${s.id}</td><td><a href="${s.origin}" target="_blank">${s.origin}</a></td>`+
+        `<td style="text-align:center">${s.depth}</td><td style="color:#666">${started}</td>`+
+        `<td style="color:#666">${dur}</td><td style="color:#7c6af7">${s.pages_indexed??'—'}</td>`+
+        `<td>${s.urls_processed??'—'}</td><td style="color:#f66">${s.urls_failed??'—'}</td><td>${badge}</td></tr>`;
+    }).join('');
+  }catch(e){}
+}
+
 setInterval(refreshStats,1000);
 setInterval(refreshRecent,3000);
-refreshStats();refreshRecent();
+setInterval(refreshSessions,5000);
+refreshStats();refreshRecent();refreshSessions();
 </script>
 </body>
 </html>"""
@@ -243,6 +272,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(self._stats())
         elif path == "/api/recent":
             self._send_json(self._recent())
+        elif path == "/api/sessions":
+            self._send_json(self._sessions())
         else:
             self._send_json({"error": "not found"}, 404)
 
@@ -298,6 +329,10 @@ class _Handler(BaseHTTPRequestHandler):
     def _recent(self) -> list:
         idx = _Handler.index_store
         return idx.recent_pages(limit=10) if idx else []
+
+    def _sessions(self) -> list:
+        from storage.database import DB_PATH, SessionDB
+        return SessionDB(path=DB_PATH).list_sessions(limit=20)
 
     def _start_index(self, body: dict) -> dict:
         from crawler.engine import Crawler

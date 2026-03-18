@@ -30,7 +30,7 @@ import urllib.request
 from typing import List, Optional
 
 from crawler.parser import LinkParser, TextParser
-from storage.database import DB_PATH, VisitedDB
+from storage.database import DB_PATH, SessionDB, VisitedDB
 from storage.index import InvertedIndex
 
 
@@ -155,6 +155,8 @@ class Crawler:
 
         # Visited URLs stored in SQLite — INSERT OR IGNORE is atomic
         self._visited_db = VisitedDB(path=db_path)
+        self._session_db = SessionDB(path=db_path)
+        self._session_id: Optional[int] = None
 
         self.stats = CrawlerStats()
         self._done_event = threading.Event()
@@ -181,6 +183,7 @@ class Crawler:
         """
         self._done_event.clear()
         self.stats._set(active=True, start_time=time.time())
+        self._session_id = self._session_db.create_session(origin, max_depth)
 
         for _ in range(self._max_workers):
             t = threading.Thread(target=self._worker, daemon=True)
@@ -305,3 +308,11 @@ class Crawler:
         self._work_q.join()
         self.stats._set(active=False, finish_time=time.time())
         self._done_event.set()
+        if self._session_id is not None:
+            s = self.stats.snapshot()
+            self._session_db.finish_session(
+                self._session_id,
+                pages_indexed=self._index.page_count(),
+                urls_processed=s["urls_processed"],
+                urls_failed=s["urls_failed"],
+            )
