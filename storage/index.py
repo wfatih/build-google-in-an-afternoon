@@ -78,28 +78,57 @@ class InvertedIndex(_ThreadLocalDB):
             conn.rollback()
             return False
 
-    def search(self, query: str) -> List[Tuple[str, str, int]]:
+    def search(self, query: str,
+               partial: bool = True) -> List[Tuple[str, str, int]]:
         """
         Return ranked list of (relevant_url, origin_url, depth).
 
-        Relevancy = SUM(frequency) across all matching query terms per URL.
-        Pages containing more query words, or containing them more often,
-        rank higher.  Scoring runs entirely in SQLite (no Python iteration
-        over full index).
+        Relevancy scoring
+        -----------------
+        Exact match: weight ×3 — pages that contain the exact query word
+        Prefix match: weight ×1 — pages that contain a word *starting with*
+                                  the query token (e.g. "artif" → "artificial")
+
+        Both types run inside SQLite against the idx_word index, so no full
+        table scan occurs.  partial=False falls back to exact-only matching
+        (faster, useful when called programmatically with known tokens).
         """
         words = tokenize(query)
         if not words:
             return []
 
-        placeholders = ",".join("?" * len(words))
+        if not partial:
+            # Exact-only (original behaviour)
+            placeholders = ",".join("?" * len(words))
+            sql = f"""
+                SELECT url, origin, depth, SUM(frequency) AS score
+                FROM word_index
+                WHERE word IN ({placeholders})
+                GROUP BY url
+                ORDER BY score DESC
+            """
+            rows = self._conn().execute(sql, words).fetchall()
+            return [(r["url"], r["origin"], r["depth"]) for r in rows]
+
+        # Partial: exact hit weighted ×3, prefix hit weighted ×1
+        # Build: word IN (?,…) OR word LIKE ?% OR word LIKE ?% …
+        exact_ph = ",".join("?" * len(words))
+        like_clauses = " OR ".join("word LIKE ?" for _ in words)
+        like_params = [w + "%" for w in words]
+
         sql = f"""
-            SELECT url, origin, depth, SUM(frequency) AS score
+            SELECT url, origin, depth,
+                   SUM(frequency *
+                       CASE WHEN word IN ({exact_ph}) THEN 3 ELSE 1 END
+                   ) AS score
             FROM word_index
-            WHERE word IN ({placeholders})
+            WHERE word IN ({exact_ph}) OR {like_clauses}
             GROUP BY url
             ORDER BY score DESC
         """
-        rows = self._conn().execute(sql, words).fetchall()
+        # params order: exact (for CASE), exact (for WHERE IN), like patterns
+        params = words + words + like_params
+        rows = self._conn().execute(sql, params).fetchall()
         return [(r["url"], r["origin"], r["depth"]) for r in rows]
 
     def page_count(self) -> int:

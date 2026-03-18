@@ -152,6 +152,7 @@ class CrawlerStats:
         self.urls_dropped = 0
         self.queue_depth = 0
         self.throttled = False
+        self.paused = False
         self.active = False
         self.start_time: Optional[float] = None
         self.finish_time: Optional[float] = None
@@ -164,6 +165,7 @@ class CrawlerStats:
             )
             return {
                 "active": self.active,
+                "paused": self.paused,
                 "urls_processed": self.urls_processed,
                 "urls_failed": self.urls_failed,
                 "urls_skipped": self.urls_skipped,
@@ -238,6 +240,9 @@ class Crawler:
 
         self.stats = CrawlerStats()
         self._done_event = threading.Event()
+        self._stop_event = threading.Event()
+        self._pause_event = threading.Event()
+        self._pause_event.set()   # set = running, clear = paused
         self._threads: List[threading.Thread] = []
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -280,8 +285,26 @@ class Crawler:
         """Block until crawl finishes.  Returns True if finished."""
         return self._done_event.wait(timeout)
 
+    def pause(self) -> bool:
+        """Pause the crawl. Workers finish their current page then wait."""
+        if not self.stats.active or self.stats.paused:
+            return False
+        self._pause_event.clear()
+        self.stats._set(paused=True)
+        return True
+
+    def resume(self) -> bool:
+        """Resume a paused crawl."""
+        if not self.stats.paused:
+            return False
+        self._pause_event.set()
+        self.stats._set(paused=False)
+        return True
+
     def stop(self):
-        """Drain queue and signal workers to exit."""
+        """Signal all workers to stop, drain the queue, and wait for shutdown."""
+        self._stop_event.set()
+        self._pause_event.set()          # unblock any paused workers
         while not self._work_q.empty():
             try:
                 self._work_q.get_nowait()
@@ -297,12 +320,19 @@ class Crawler:
 
     def _worker(self):
         while True:
+            if self._stop_event.is_set():
+                break
             try:
                 item = self._work_q.get(timeout=2.0)
             except queue.Empty:
-                if self._done_event.is_set():
+                if self._done_event.is_set() or self._stop_event.is_set():
                     break
                 continue
+            # Block here while paused (pause_event is clear = paused)
+            self._pause_event.wait()
+            if self._stop_event.is_set():
+                self._work_q.task_done()
+                break
             url = item[0]
             # Mark visited HERE (at dequeue time), not at enqueue time.
             # This ensures that a URL dropped due to back-pressure is NOT

@@ -57,6 +57,7 @@ class TestCrawlerStats(unittest.TestCase):
         s = CrawlerStats()
         snap = s.snapshot()
         self.assertFalse(snap["active"])
+        self.assertFalse(snap["paused"])
         self.assertEqual(snap["urls_processed"], 0)
         self.assertEqual(snap["urls_failed"], 0)
         self.assertEqual(snap["urls_dropped_backpressure"], 0)
@@ -105,6 +106,16 @@ class TestCrawlerStats(unittest.TestCase):
             t.join()
         self.assertEqual(errors, [])
         self.assertEqual(s.snapshot()["urls_processed"], 250)
+
+
+    def test_pause_sets_paused(self):
+        s = CrawlerStats()
+        s._set(active=True, paused=True)
+        self.assertTrue(s.snapshot()["paused"])
+
+    def test_paused_false_by_default(self):
+        s = CrawlerStats()
+        self.assertFalse(s.snapshot()["paused"])
 
 
 if __name__ == "__main__":

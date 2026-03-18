@@ -111,6 +111,10 @@ tr.selected td{background:#1e1e3a;border-bottom-color:#7c6af7}
       <label for="isamedomain">Same domain only (recommended — avoids crawling the entire internet)</label>
     </div>
     <button class="btn" id="start-btn" onclick="startCrawl()">Start Crawl</button>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.4rem;margin-top:.4rem">
+      <button class="btn" id="pause-btn" onclick="pauseResume()" style="display:none;background:#f90"></button>
+      <button class="btn" id="stop-btn"  onclick="stopCrawl()"   style="display:none;background:#c33">Stop</button>
+    </div>
     <div id="crawl-msg"></div>
 
     <div style="margin-top:1.25rem">
@@ -137,11 +141,12 @@ tr.selected td{background:#1e1e3a;border-bottom-color:#7c6af7}
     <h2>Search</h2>
     <div class="form-group">
       <label>Query</label>
-      <input type="text" id="sq" placeholder="Enter keywords..." onkeydown="if(event.key==='Enter')doSearch()">
+      <input type="text" id="sq" placeholder="Enter keywords… partial ok (e.g. 'artif')" onkeydown="if(event.key==='Enter')doSearch(true)">
     </div>
-    <button class="btn" onclick="doSearch()">Search</button>
+    <button class="btn" onclick="doSearch(true)">Search</button>
     <div id="smsg"></div>
     <div id="results"></div>
+    <button class="btn" id="more-btn" onclick="doSearch(false)" style="display:none;margin-top:.5rem;background:#333">Load more</button>
   </div>
 
   <!-- Recent -->
@@ -186,6 +191,8 @@ tr.selected td{background:#1e1e3a;border-bottom-color:#7c6af7}
 <script>
 let maxQ=500;
 let selectedSession=null;
+let searchOffset=0;
+const PAGE=20;
 
 async function startCrawl(){
   const url=document.getElementById('iurl').value.trim();
@@ -205,23 +212,46 @@ async function startCrawl(){
   }catch(e){showMsg('crawl-msg','Request failed','err');document.getElementById('start-btn').disabled=false;}
 }
 
-async function doSearch(){
+async function pauseResume(){
+  const pb=document.getElementById('pause-btn');
+  const isPaused=pb.textContent==='Resume';
+  const endpoint=isPaused?'/api/resume':'/api/pause';
+  try{
+    const d=await (await fetch(endpoint,{method:'POST'})).json();
+    if(d.error)showMsg('crawl-msg',d.error,'err');
+  }catch(e){}
+}
+
+async function stopCrawl(){
+  if(!confirm('Stop the current crawl?'))return;
+  try{
+    await fetch('/api/stop',{method:'POST'});
+    showMsg('crawl-msg','Crawl stopped.','ok');
+  }catch(e){}
+}
+
+async function doSearch(reset){
   const q=document.getElementById('sq').value.trim();
   if(!q)return;
+  if(reset){searchOffset=0;document.getElementById('results').innerHTML='';}
   document.getElementById('smsg').innerHTML='';
-  document.getElementById('results').innerHTML='<div style="color:#666;font-size:.85rem;margin-top:.5rem">Searching...</div>';
+  if(searchOffset===0)document.getElementById('results').innerHTML='<div style="color:#666;font-size:.85rem;margin-top:.5rem">Searching...</div>';
   try{
     const r=await fetch('/api/search',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({query:q,limit:20})});
+      body:JSON.stringify({query:q,limit:PAGE,offset:searchOffset})});
     const d=await r.json();
-    if(!d.results||d.results.length===0){
+    if(searchOffset===0&&(!d.results||d.results.length===0)){
       document.getElementById('results').innerHTML='<div style="color:#666;font-size:.85rem;margin-top:.75rem">No results found.</div>';
+      document.getElementById('more-btn').style.display='none';
       return;
     }
-    document.getElementById('results').innerHTML=
-      '<div style="font-size:.75rem;color:#666;margin-top:.75rem">'+d.total+' result(s) for "'+d.query+'"</div>'+
-      d.results.map(r=>`<div class="result"><div class="url"><a href="${r.url}" target="_blank">${r.url}</a></div>`+
-        `<div class="meta">origin: ${r.origin} &nbsp;&middot;&nbsp; depth: ${r.depth}</div></div>`).join('');
+    const header=searchOffset===0?`<div style="font-size:.75rem;color:#666;margin-top:.75rem">${d.total} result(s) for "${d.query}"</div>`:'';
+    const cards=d.results.map(r=>`<div class="result"><div class="url"><a href="${r.url}" target="_blank">${r.url}</a></div>`+
+      `<div class="meta">origin: ${r.origin} &nbsp;&middot;&nbsp; depth: ${r.depth}${r.partial?' &nbsp;<span style="color:#7c6af7;font-size:.65rem">partial</span>':''}</div></div>`).join('');
+    if(searchOffset===0)document.getElementById('results').innerHTML=header+cards;
+    else document.getElementById('results').insertAdjacentHTML('beforeend',cards);
+    searchOffset+=d.results.length;
+    document.getElementById('more-btn').style.display=d.has_more?'block':'none';
   }catch(e){document.getElementById('results').innerHTML='';showMsg('smsg','Search failed','err');}
 }
 
@@ -235,12 +265,24 @@ async function refreshStats(){
     document.getElementById('s-fail').textContent=s.urls_failed||0;
     document.getElementById('s-skip').textContent=s.urls_skipped||0;
     document.getElementById('s-drop').textContent=s.urls_dropped_backpressure||0;
-    const btn=document.getElementById('start-btn');
+    const startBtn=document.getElementById('start-btn');
+    const pauseBtn=document.getElementById('pause-btn');
+    const stopBtn=document.getElementById('stop-btn');
     const sb=document.getElementById('sbadge');
-    if(s.active){sb.textContent='● ACTIVE';sb.className='badge b-active';btn.disabled=true;btn.textContent='Crawling...';}
-    else{sb.textContent='■ IDLE';sb.className='badge b-idle';btn.disabled=false;btn.textContent='Start Crawl';}
+    if(s.active){
+      sb.className='badge '+(s.paused?'b-throttled':'b-active');
+      sb.textContent=s.paused?'⏸ PAUSED':'● ACTIVE';
+      startBtn.disabled=true;startBtn.textContent='Crawling...';
+      pauseBtn.style.display='block';
+      pauseBtn.textContent=s.paused?'Resume':'Pause';
+      stopBtn.style.display='block';
+    } else {
+      sb.textContent='■ IDLE';sb.className='badge b-idle';
+      startBtn.disabled=false;startBtn.textContent='Start Crawl';
+      pauseBtn.style.display='none';stopBtn.style.display='none';
+    }
     document.getElementById('elapsed').textContent=s.elapsed_s?s.elapsed_s+'s elapsed':'';
-    document.getElementById('tbadge').innerHTML=s.throttled?'<span class="badge b-throttled">⚠ THROTTLED</span>':'';
+    document.getElementById('tbadge').innerHTML=s.throttled&&!s.paused?'<span class="badge b-throttled">⚠ THROTTLED</span>':'';
     const pct=maxQ>0?Math.min(100,((s.queue_depth||0)/maxQ)*100):0;
     document.getElementById('qbar').style.width=pct+'%';
   }catch(e){}
@@ -379,6 +421,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(self._start_index(body))
         elif path == "/api/search":
             self._send_json(self._search(body))
+        elif path == "/api/pause":
+            self._send_json(self._pause())
+        elif path == "/api/resume":
+            self._send_json(self._resume())
+        elif path == "/api/stop":
+            self._send_json(self._stop())
         else:
             self._send_json({"error": "not found"}, 404)
 
@@ -480,23 +528,47 @@ class _Handler(BaseHTTPRequestHandler):
     def _search(self, body: dict) -> dict:
         query = body.get("query", "").strip()
         limit = int(body.get("limit", 20))
+        offset = int(body.get("offset", 0))
 
         if not query:
             return {"results": [], "error": "query is required"}
 
         idx = _Handler.index_store
         if not idx:
-            return {"query": query, "total": 0, "results": []}
+            return {"query": query, "total": 0, "results": [], "has_more": False}
 
-        all_results = idx.search(query)
+        all_results = idx.search(query, partial=True)
+        page = all_results[offset: offset + limit]
         return {
             "query": query,
             "total": len(all_results),
+            "has_more": offset + limit < len(all_results),
             "results": [
                 {"url": u, "origin": o, "depth": d}
-                for u, o, d in all_results[:limit]
+                for u, o, d in page
             ],
         }
+
+    def _pause(self) -> dict:
+        c = _Handler.crawler_instance
+        if not c:
+            return {"error": "No active crawl"}
+        ok = c.pause()
+        return {"ok": ok} if ok else {"error": "Crawl is not active or already paused"}
+
+    def _resume(self) -> dict:
+        c = _Handler.crawler_instance
+        if not c:
+            return {"error": "No active crawl"}
+        ok = c.resume()
+        return {"ok": ok} if ok else {"error": "Crawl is not paused"}
+
+    def _stop(self) -> dict:
+        c = _Handler.crawler_instance
+        if not c or not c.is_active():
+            return {"error": "No active crawl"}
+        threading.Thread(target=c.stop, daemon=True).start()
+        return {"ok": True}
 
 
 # ---------------------------------------------------------------------------

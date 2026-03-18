@@ -88,6 +88,29 @@ class TestInvertedIndex(unittest.TestCase):
         # save() must not raise
         self.idx.save()
 
+    def test_partial_search_matches_prefix(self):
+        self.idx.add_page("https://a.com", "https://a.com", 0,
+                          {"artificial": 3, "intelligence": 2})
+        # "artif" should match "artificial" via prefix
+        results = self.idx.search("artif", partial=True)
+        urls = [r[0] for r in results]
+        self.assertIn("https://a.com", urls)
+
+    def test_partial_search_exact_ranks_higher(self):
+        self.idx.add_page("https://exact.com", "https://a.com", 0,
+                          {"python": 2})
+        self.idx.add_page("https://prefix.com", "https://a.com", 0,
+                          {"pythonic": 2})
+        results = self.idx.search("python", partial=True)
+        self.assertEqual(results[0][0], "https://exact.com")
+
+    def test_partial_false_no_prefix_match(self):
+        self.idx.add_page("https://a.com", "https://a.com", 0,
+                          {"artificial": 5})
+        # exact-only: "artif" should NOT match
+        results = self.idx.search("artif", partial=False)
+        self.assertEqual(results, [])
+
 
 if __name__ == "__main__":
     unittest.main()
