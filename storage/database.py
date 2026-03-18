@@ -3,11 +3,13 @@ database.py — SQLite schema, initialization, and shared connection management.
 
 Schema
 ------
-  pages          (url PK, origin, depth, indexed_at)
+  pages          (url PK, origin, depth, indexed_at, session_id)
   word_index     (word, url PK, origin, depth, frequency)
   visited        (url PK, visited_at)
   crawl_sessions (id PK, origin, depth, started_at, finished_at,
-                  pages_indexed, urls_processed, urls_failed, status)
+                  pages_indexed, urls_processed, urls_failed,
+                  urls_skipped, status, same_domain)
+  failed_urls    (id PK, session_id, url, error, failed_at)
 
 Design notes
 ------------
@@ -16,6 +18,8 @@ Design notes
   restrictions while sharing a single database file.
 - INSERT OR IGNORE on `visited` makes the visited-URL check atomic without
   any application-level mutex.
+- failed_urls stores every real HTTP/network error per session so the UI can
+  display a per-session failure list.
 """
 
 import os
@@ -45,7 +49,8 @@ def init_db(path: str = DB_PATH) -> None:
             url        TEXT PRIMARY KEY,
             origin     TEXT NOT NULL,
             depth      INTEGER NOT NULL,
-            indexed_at REAL NOT NULL
+            indexed_at REAL NOT NULL,
+            session_id INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS word_index (
@@ -73,10 +78,34 @@ def init_db(path: str = DB_PATH) -> None:
             pages_indexed  INTEGER,
             urls_processed INTEGER,
             urls_failed    INTEGER,
+            urls_skipped   INTEGER,
+            same_domain    INTEGER DEFAULT 1,
             status         TEXT NOT NULL DEFAULT 'running'
         );
+
+        CREATE TABLE IF NOT EXISTS failed_urls (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            url        TEXT NOT NULL,
+            error      TEXT,
+            failed_at  REAL NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_failed_session
+            ON failed_urls(session_id);
     """)
     conn.commit()
+    # Migrate existing DBs: add columns added after v1
+    for migration in [
+        "ALTER TABLE pages ADD COLUMN session_id INTEGER",
+        "ALTER TABLE crawl_sessions ADD COLUMN urls_skipped INTEGER",
+        "ALTER TABLE crawl_sessions ADD COLUMN same_domain INTEGER DEFAULT 1",
+    ]:
+        try:
+            conn.execute(migration)
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
     conn.close()
 
 
@@ -137,6 +166,41 @@ class VisitedDB(_ThreadLocalDB):
 
 
 # ---------------------------------------------------------------------------
+# Failed-URL store (per crawl session)
+# ---------------------------------------------------------------------------
+
+class FailedURLDB(_ThreadLocalDB):
+    """Records every real HTTP/network failure for the UI drill-down."""
+
+    def add_failure(self, session_id: int, url: str, error: str) -> None:
+        conn = self._conn()
+        try:
+            conn.execute(
+                "INSERT INTO failed_urls(session_id, url, error, failed_at) "
+                "VALUES (?, ?, ?, ?)",
+                (session_id, url, error, time.time()),
+            )
+            conn.commit()
+        except sqlite3.Error:
+            pass
+
+    def failures_for_session(self, session_id: int,
+                             limit: int = 200) -> List[Dict]:
+        rows = self._conn().execute(
+            "SELECT url, error, failed_at FROM failed_urls "
+            "WHERE session_id=? ORDER BY failed_at DESC LIMIT ?",
+            (session_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_for_session(self, session_id: int) -> int:
+        return self._conn().execute(
+            "SELECT COUNT(*) FROM failed_urls WHERE session_id=?",
+            (session_id,),
+        ).fetchone()[0]
+
+
+# ---------------------------------------------------------------------------
 # Crawl-session history
 # ---------------------------------------------------------------------------
 
@@ -147,32 +211,48 @@ class SessionDB(_ThreadLocalDB):
     create_session()  — called when a crawl starts, returns the session id.
     finish_session()  — called when the crawl monitor signals done.
     list_sessions()   — returns the most recent sessions for the UI.
+    get_session()     — returns one session by id.
     """
 
-    def create_session(self, origin: str, depth: int) -> int:
+    def create_session(self, origin: str, depth: int,
+                       same_domain: bool = True) -> int:
         conn = self._conn()
         cur = conn.execute(
-            "INSERT INTO crawl_sessions(origin, depth, started_at, status) "
-            "VALUES (?, ?, ?, 'running')",
-            (origin, depth, time.time()),
+            "INSERT INTO crawl_sessions"
+            "(origin, depth, started_at, same_domain, status) "
+            "VALUES (?, ?, ?, ?, 'running')",
+            (origin, depth, time.time(), int(same_domain)),
         )
         conn.commit()
         return cur.lastrowid
 
     def finish_session(self, session_id: int, pages_indexed: int,
-                       urls_processed: int, urls_failed: int) -> None:
+                       urls_processed: int, urls_failed: int,
+                       urls_skipped: int = 0) -> None:
         conn = self._conn()
         conn.execute(
             "UPDATE crawl_sessions SET finished_at=?, pages_indexed=?, "
-            "urls_processed=?, urls_failed=?, status='done' WHERE id=?",
-            (time.time(), pages_indexed, urls_processed, urls_failed, session_id),
+            "urls_processed=?, urls_failed=?, urls_skipped=?, status='done' "
+            "WHERE id=?",
+            (time.time(), pages_indexed, urls_processed,
+             urls_failed, urls_skipped, session_id),
         )
         conn.commit()
+
+    def get_session(self, session_id: int) -> Optional[Dict]:
+        row = self._conn().execute(
+            "SELECT id, origin, depth, started_at, finished_at, "
+            "pages_indexed, urls_processed, urls_failed, urls_skipped, "
+            "same_domain, status FROM crawl_sessions WHERE id=?",
+            (session_id,),
+        ).fetchone()
+        return dict(row) if row else None
 
     def list_sessions(self, limit: int = 20) -> List[Dict]:
         rows = self._conn().execute(
             "SELECT id, origin, depth, started_at, finished_at, "
-            "pages_indexed, urls_processed, urls_failed, status "
+            "pages_indexed, urls_processed, urls_failed, urls_skipped, "
+            "same_domain, status "
             "FROM crawl_sessions ORDER BY started_at DESC LIMIT ?",
             (limit,),
         ).fetchall()

@@ -6,6 +6,7 @@ Architecture
   start(origin, k)
     └── seeds (origin, depth=0) into _work_q (bounded Queue)
          └── N worker threads consume items
+              ├── extension pre-filter     ← skip binary/static files early
               ├── token-bucket rate limiter  ← back-pressure #1
               ├── urllib.request fetch       ← stdlib HTTP only
               ├── html.parser extraction     ← stdlib HTML only
@@ -16,22 +17,59 @@ Back-pressure
   1. queue.Queue(maxsize) — child URLs dropped when queue full
   2. Token-bucket rate limiter — workers sleep when bucket empty
 
+URL filtering (reduces failures drastically)
+  • Extension filter  — skip .jpg/.png/.pdf/… before even fetching
+  • Same-domain guard — only follow links to the same host as origin
+  • Non-HTML skip     — content-type check in _fetch; counted as "skipped",
+                        NOT as "failed" (these are not errors)
+  • Failure tracking  — real HTTP/network errors written to failed_urls table
+
 Persistence
   Visited URLs live in SQLite (INSERT OR IGNORE is atomic).
+  Failed URLs stored per session in failed_urls table.
   No separate JSON files needed; resume works across restarts.
 """
 
+import os
 import queue
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from crawler.parser import LinkParser, TextParser
-from storage.database import DB_PATH, SessionDB, VisitedDB
+from storage.database import DB_PATH, FailedURLDB, SessionDB, VisitedDB
 from storage.index import InvertedIndex
+
+
+# ---------------------------------------------------------------------------
+# URL pre-filter: extensions that are never HTML
+# ---------------------------------------------------------------------------
+
+_SKIP_EXTENSIONS: Set[str] = frozenset({
+    # Images
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico",
+    ".bmp", ".tiff", ".tif", ".avif", ".heic",
+    # Documents / data
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".zip", ".tar", ".gz", ".rar", ".7z",
+    ".json", ".xml", ".csv", ".tsv", ".yaml", ".yml",
+    # Media
+    ".mp3", ".mp4", ".ogg", ".webm", ".avi", ".mov", ".mkv",
+    ".wav", ".flac",
+    # Code / static assets
+    ".css", ".js", ".ts", ".woff", ".woff2", ".ttf", ".eot",
+    ".map", ".txt",
+})
+
+
+def _should_skip_url(url: str) -> bool:
+    """Return True if the URL's path extension marks it as non-HTML."""
+    path = urllib.parse.urlparse(url).path.lower()
+    _, ext = os.path.splitext(path)
+    return ext in _SKIP_EXTENSIONS
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +115,7 @@ class CrawlerStats:
         self._lock = threading.Lock()
         self.urls_processed = 0
         self.urls_failed = 0
+        self.urls_skipped = 0       # non-HTML by content-type or extension
         self.urls_dropped = 0
         self.queue_depth = 0
         self.throttled = False
@@ -94,6 +133,7 @@ class CrawlerStats:
                 "active": self.active,
                 "urls_processed": self.urls_processed,
                 "urls_failed": self.urls_failed,
+                "urls_skipped": self.urls_skipped,
                 "urls_dropped_backpressure": self.urls_dropped,
                 "queue_depth": self.queue_depth,
                 "throttled": self.throttled,
@@ -123,6 +163,7 @@ class Crawler:
     max_queue    : queue.Queue maxsize — back-pressure ceiling
     rate         : max HTTP fetches / second (token bucket)
     timeout      : per-request HTTP timeout in seconds
+    same_domain  : if True (default) only follow links on the same hostname
     save_interval: (legacy, no-op; SQLite auto-commits every add_page)
     db_path      : path to the SQLite database for visited-URL tracking
     """
@@ -140,6 +181,7 @@ class Crawler:
         max_queue: int = 500,
         rate: float = 10.0,
         timeout: float = 10.0,
+        same_domain: bool = True,
         visited_path: Optional[str] = None,  # kept for API compat
         save_interval: int = 50,             # kept for API compat
         db_path: str = DB_PATH,
@@ -149,6 +191,7 @@ class Crawler:
         self._timeout = timeout
         self._save_interval = save_interval
         self._max_queue = max_queue
+        self._same_domain = same_domain
 
         self._rate_limiter = _RateLimiter(rate)
         self._work_q: queue.Queue = queue.Queue(maxsize=max_queue)
@@ -156,7 +199,9 @@ class Crawler:
         # Visited URLs stored in SQLite — INSERT OR IGNORE is atomic
         self._visited_db = VisitedDB(path=db_path)
         self._session_db = SessionDB(path=db_path)
+        self._failed_db = FailedURLDB(path=db_path)
         self._session_id: Optional[int] = None
+        self._origin_host: str = ""
 
         self.stats = CrawlerStats()
         self._done_event = threading.Event()
@@ -183,7 +228,10 @@ class Crawler:
         """
         self._done_event.clear()
         self.stats._set(active=True, start_time=time.time())
-        self._session_id = self._session_db.create_session(origin, max_depth)
+        self._origin_host = urllib.parse.urlparse(origin).netloc.lower()
+        self._session_id = self._session_db.create_session(
+            origin, max_depth, same_domain=self._same_domain
+        )
 
         for _ in range(self._max_workers):
             t = threading.Thread(target=self._worker, daemon=True)
@@ -240,21 +288,36 @@ class Crawler:
                 self.stats._set(queue_depth=self._work_q.qsize())
 
     def _process(self, url: str, origin: str, depth: int, max_depth: int):
+        # Extension pre-filter: skip binary/static resources entirely.
+        # These are NOT failures — we never intended to index them.
+        if _should_skip_url(url):
+            self.stats._inc("urls_skipped")
+            return
+
         # Rate-limit (back-pressure #1)
         if not self._rate_limiter.try_acquire():
             self.stats._set(throttled=True)
             self._rate_limiter.wait_and_acquire()
         self.stats._set(throttled=False)
 
-        html = self._fetch(url)
+        html, error = self._fetch(url)
+
         if html is None:
-            self.stats._inc("urls_failed")
+            if error == "skip":
+                # Non-HTML content (image served without extension, etc.)
+                self.stats._inc("urls_skipped")
+            else:
+                # Real network / HTTP error
+                self.stats._inc("urls_failed")
+                if self._session_id is not None and error:
+                    self._failed_db.add_failure(self._session_id, url, error)
             return
 
         # Parse text and index
         tp = TextParser()
         tp.feed(html)
-        self._index.add_page(url, origin, depth, tp.word_counts())
+        self._index.add_page(url, origin, depth, tp.word_counts(),
+                             session_id=self._session_id)
         self.stats._inc("urls_processed")
 
         # Discover child links
@@ -262,12 +325,14 @@ class Crawler:
             lp = LinkParser(url)
             lp.feed(html)
             for link in lp.links:
-                # We do NOT mark visited here anymore — that happens at
-                # dequeue time in _worker.  This means a dropped URL (queue
-                # full) is not permanently lost; it stays unvisited and will
-                # be processed if discovered again in a later crawl session.
-                # Duplicate enqueuing is harmless: the second dequeue is
-                # skipped instantly by _worker's mark_visited check.
+                # Domain filter: skip links outside the origin host
+                if self._same_domain:
+                    link_host = urllib.parse.urlparse(link).netloc.lower()
+                    if link_host != self._origin_host:
+                        continue
+                # Extension pre-filter: don't even enqueue binary URLs
+                if _should_skip_url(link):
+                    continue
                 try:
                     self._work_q.put_nowait(
                         (link, origin, depth + 1, max_depth)
@@ -276,8 +341,16 @@ class Crawler:
                     # Back-pressure #2: queue at capacity — drop URL
                     self.stats._inc("urls_dropped")
 
-    def _fetch(self, url: str) -> Optional[str]:
-        """HTTP GET using stdlib urllib. Returns HTML text or None."""
+    def _fetch(self, url: str):
+        """
+        HTTP GET using stdlib urllib.
+
+        Returns
+        -------
+        (html_str, None)      — success
+        (None,     "skip")    — non-HTML content (not an error)
+        (None,     error_msg) — real HTTP/network error
+        """
         try:
             # Percent-encode any non-ASCII characters in the URL path/query
             # (e.g. Cyrillic/Arabic Wikipedia URLs) so urllib can handle them.
@@ -290,16 +363,20 @@ class Crawler:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                 ct = resp.headers.get("Content-Type", "")
                 if "text/html" not in ct:
-                    return None
+                    return None, "skip"
                 charset = "utf-8"
                 for part in ct.split(";"):
                     part = part.strip()
                     if part.lower().startswith("charset="):
                         charset = part.split("=", 1)[1].strip()
                         break
-                return resp.read().decode(charset, errors="replace")
-        except Exception:
-            return None
+                return resp.read().decode(charset, errors="replace"), None
+        except urllib.error.HTTPError as e:
+            return None, f"HTTP {e.code}"
+        except urllib.error.URLError as e:
+            return None, f"URLError: {e.reason}"
+        except Exception as e:
+            return None, str(e)[:120]
 
     # ── Monitor ──────────────────────────────────────────────────────────────
 
@@ -315,4 +392,5 @@ class Crawler:
                 pages_indexed=self._index.page_count(),
                 urls_processed=s["urls_processed"],
                 urls_failed=s["urls_failed"],
+                urls_skipped=s["urls_skipped"],
             )

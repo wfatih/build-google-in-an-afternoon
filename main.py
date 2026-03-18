@@ -87,6 +87,7 @@ def cmd_index(args):
         max_queue=args.max_queue,
         rate=args.rate,
         timeout=args.timeout,
+        same_domain=not args.all_domains,
         db_path=DB_PATH,
     )
 
@@ -116,6 +117,8 @@ def cmd_index(args):
                     f"\r  processed={s['urls_processed']:5d}  "
                     f"queued={s['queue_depth']:4d}  "
                     f"indexed={idx.page_count():5d}  "
+                    f"failed={s['urls_failed']:4d}  "
+                    f"skipped={s['urls_skipped']:4d}  "
                     f"{'[throttled]' if s['throttled'] else '           '}",
                     end="", flush=True,
                 )
@@ -189,6 +192,8 @@ def build_parser() -> argparse.ArgumentParser:
     pi.add_argument("--max-queue", type=int, default=500)
     pi.add_argument("--timeout", type=float, default=10.0)
     pi.add_argument("--dashboard", action="store_true")
+    pi.add_argument("--all-domains", action="store_true",
+                    help="Follow links to any domain (default: same domain only)")
 
     # search
     psr = sub.add_parser("search", help="Search the index")

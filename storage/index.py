@@ -27,7 +27,7 @@ import sqlite3
 import time
 import threading
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple  # noqa: F401
 
 from storage.database import DB_PATH, _ThreadLocalDB
 from crawler.parser import tokenize
@@ -50,7 +50,8 @@ class InvertedIndex(_ThreadLocalDB):
         super().__init__(index_path)
 
     def add_page(self, url: str, origin: str, depth: int,
-                 word_counts: Dict[str, int]) -> bool:
+                 word_counts: Dict[str, int],
+                 session_id: Optional[int] = None) -> bool:
         """
         Index one page.  Returns False if URL was already indexed (idempotent).
         Safe to call from multiple worker threads simultaneously.
@@ -58,9 +59,10 @@ class InvertedIndex(_ThreadLocalDB):
         conn = self._conn()
         try:
             conn.execute(
-                "INSERT OR IGNORE INTO pages(url, origin, depth, indexed_at) "
-                "VALUES (?, ?, ?, ?)",
-                (url, origin, depth, time.time()),
+                "INSERT OR IGNORE INTO pages"
+                "(url, origin, depth, indexed_at, session_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (url, origin, depth, time.time(), session_id),
             )
             if conn.execute("SELECT changes()").fetchone()[0] == 0:
                 return False  # already indexed
@@ -113,6 +115,16 @@ class InvertedIndex(_ThreadLocalDB):
             "SELECT url, origin, depth, indexed_at FROM pages "
             "ORDER BY indexed_at DESC LIMIT ?",
             (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def pages_for_session(self, session_id: int,
+                          limit: int = 200) -> List[dict]:
+        """Return pages indexed during a specific crawl session."""
+        rows = self._conn().execute(
+            "SELECT url, origin, depth, indexed_at FROM pages "
+            "WHERE session_id=? ORDER BY indexed_at DESC LIMIT ?",
+            (session_id, limit),
         ).fetchall()
         return [dict(r) for r in rows]
 
