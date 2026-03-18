@@ -65,11 +65,44 @@ _SKIP_EXTENSIONS: Set[str] = frozenset({
 })
 
 
+# Wikipedia / MediaWiki namespaces that are not article content.
+# Skipping these avoids talk pages, user pages, admin special pages, etc.
+# The filter is path-prefix based so it works on any MediaWiki site.
+_SKIP_PATH_PREFIXES: tuple = (
+    "/special:", "/talk:", "/user:", "/user_talk:",
+    "/wikipedia:", "/wikipedia_talk:", "/help:", "/help_talk:",
+    "/portal:", "/portal_talk:", "/template:", "/template_talk:",
+    "/category_talk:", "/file_talk:", "/mediawiki:",
+    # Common query-parameter patterns that generate near-infinite URLs
+    "action=edit", "action=history", "action=raw",
+    "oldid=", "diff=", "printable=yes",
+)
+
+
 def _should_skip_url(url: str) -> bool:
-    """Return True if the URL's path extension marks it as non-HTML."""
-    path = urllib.parse.urlparse(url).path.lower()
-    _, ext = os.path.splitext(path)
-    return ext in _SKIP_EXTENSIONS
+    """
+    Return True if the URL should be skipped without fetching.
+
+    Checks (in order):
+      1. File extension → binary/static resource
+      2. Path prefix    → MediaWiki non-content namespaces
+      3. Query string   → MediaWiki action/diff/oldid parameters
+    """
+    parsed = urllib.parse.urlparse(url)
+    path_lower = parsed.path.lower()
+    _, ext = os.path.splitext(path_lower)
+    if ext in _SKIP_EXTENSIONS:
+        return True
+    # Check path prefixes (MediaWiki namespaces encoded in path)
+    for prefix in _SKIP_PATH_PREFIXES[:14]:   # path-based prefixes only
+        if prefix in path_lower:
+            return True
+    # Check query string for action-type parameters
+    query_lower = parsed.query.lower()
+    for qpat in _SKIP_PATH_PREFIXES[14:]:    # query-based patterns
+        if qpat in query_lower:
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
