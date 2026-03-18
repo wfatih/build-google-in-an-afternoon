@@ -166,10 +166,19 @@ class Crawler:
         """
         Begin BFS crawl from *origin* to *max_depth*.
         Returns immediately; work runs on background daemon threads.
-        """
-        if not self._visited_db.mark_visited(origin):
-            return  # already crawled (resume scenario)
 
+        Visited-URL semantics (post-fix)
+        ---------------------------------
+        URLs are marked visited in _worker at DEQUEUE time, not at enqueue time.
+        This means:
+          - A URL dropped due to back-pressure (queue full) is NOT permanently
+            lost — it will be processed if rediscovered in a later session.
+          - Two workers may race to mark the same URL; the second sees False
+            and skips immediately, so no duplicate indexing occurs.
+          - The origin is seeded unconditionally; if already visited the first
+            worker dequeue skips it (mark_visited → False), the queue drains,
+            and the monitor signals done within seconds.
+        """
         self._done_event.clear()
         self.stats._set(active=True, start_time=time.time())
 
@@ -210,6 +219,15 @@ class Crawler:
                 if self._done_event.is_set():
                     break
                 continue
+            url = item[0]
+            # Mark visited HERE (at dequeue time), not at enqueue time.
+            # This ensures that a URL dropped due to back-pressure is NOT
+            # permanently lost — it stays discoverable in future crawl runs.
+            # If two workers race on the same URL (possible if it was enqueued
+            # twice before either was dequeued), only the first proceeds.
+            if not self._visited_db.mark_visited(url):
+                self._work_q.task_done()
+                continue
             try:
                 self._process(*item)
             except Exception:
@@ -241,19 +259,31 @@ class Crawler:
             lp = LinkParser(url)
             lp.feed(html)
             for link in lp.links:
-                if self._visited_db.mark_visited(link):
-                    try:
-                        self._work_q.put_nowait(
-                            (link, origin, depth + 1, max_depth)
-                        )
-                    except queue.Full:
-                        # Back-pressure #2: queue at capacity — drop URL
-                        self.stats._inc("urls_dropped")
+                # We do NOT mark visited here anymore — that happens at
+                # dequeue time in _worker.  This means a dropped URL (queue
+                # full) is not permanently lost; it stays unvisited and will
+                # be processed if discovered again in a later crawl session.
+                # Duplicate enqueuing is harmless: the second dequeue is
+                # skipped instantly by _worker's mark_visited check.
+                try:
+                    self._work_q.put_nowait(
+                        (link, origin, depth + 1, max_depth)
+                    )
+                except queue.Full:
+                    # Back-pressure #2: queue at capacity — drop URL
+                    self.stats._inc("urls_dropped")
 
     def _fetch(self, url: str) -> Optional[str]:
         """HTTP GET using stdlib urllib. Returns HTML text or None."""
-        req = urllib.request.Request(url, headers=self._HEADERS)
         try:
+            # Percent-encode any non-ASCII characters in the URL path/query
+            # (e.g. Cyrillic/Arabic Wikipedia URLs) so urllib can handle them.
+            p = urllib.parse.urlparse(url)
+            safe_url = p._replace(
+                path=urllib.parse.quote(p.path, safe="/:@!$&'()*+,;="),
+                query=urllib.parse.quote(p.query, safe="=&+"),
+            ).geturl()
+            req = urllib.request.Request(safe_url, headers=self._HEADERS)
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                 ct = resp.headers.get("Content-Type", "")
                 if "text/html" not in ct:

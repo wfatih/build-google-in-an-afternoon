@@ -106,5 +106,11 @@ class VisitedDB(_ThreadLocalDB):
         except sqlite3.Error:
             return False
 
+    def is_visited(self, url: str) -> bool:
+        row = self._conn().execute(
+            "SELECT 1 FROM visited WHERE url=?", (url,)
+        ).fetchone()
+        return row is not None
+
     def count(self) -> int:
         return self._conn().execute("SELECT COUNT(*) FROM visited").fetchone()[0]
