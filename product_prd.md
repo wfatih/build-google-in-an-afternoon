@@ -93,7 +93,7 @@ A single-machine, concurrent web crawler and real-time search engine built entir
 
 | ID | Requirement |
 |---|---|
-| F-W1 | Serve a single-page HTML dashboard on `localhost:8080` (configurable port). |
+| F-W1 | Serve a single-page HTML dashboard on `localhost:3600` (configurable port). |
 | F-W2 | Use Python's built-in `http.server.ThreadingHTTPServer` — no Flask/Django/FastAPI. |
 | F-W3 | Expose REST endpoints (see §7). |
 | F-W4 | Auto-refresh stats every 1 s, recent pages every 3 s, session list every 5 s. |
@@ -203,8 +203,10 @@ Wikipedia articles link to thousands of external sites. Without domain scoping, 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/` | Single-page web UI |
+| `GET` | `/search?query=X&sortBy=relevance` | Scored search — returns `relevance_score` per result using formula `(freq×10)+1000−(depth×5)` |
 | `GET` | `/api/stats` | Live crawler + index statistics |
 | `GET` | `/api/recent` | Last 10 indexed pages |
+| `GET` | `/api/export` | Export word index to `data/storage/p.data` (plaintext: word url origin depth frequency) |
 | `GET` | `/api/sessions` | All crawl session records |
 | `GET` | `/api/sessions/<id>` | Session detail: indexed pages + failed URLs |
 | `POST` | `/api/index` | Start crawl `{url, depth, workers, rate, max_queue, same_domain}` |
@@ -225,7 +227,7 @@ Wikipedia articles link to thousands of external sites. Without domain scoping, 
 | AC4 | Queue does not grow beyond `max_queue` during a wide crawl. |
 | AC5 | Interrupting with Ctrl+C and restarting resumes without re-fetching visited URLs. |
 | AC6 | Dashboard shows queue depth, throttle status, and elapsed time updating live. |
-| AC7 | `python main.py server` starts HTTP server; browser at localhost:8080 shows the dashboard. |
+| AC7 | `python main.py server` starts HTTP server; browser at localhost:3600 shows the dashboard. |
 | AC8 | Starting a crawl from the web UI and searching returns results in the browser. |
 | AC9 | Pause/Resume buttons appear during an active crawl; queue depth is preserved across pause. |
 | AC10 | Searching `"artif"` returns pages containing `"artificial"`. |

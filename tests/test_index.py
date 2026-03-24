@@ -74,7 +74,9 @@ class TestInvertedIndex(unittest.TestCase):
         self.assertEqual(depth, 2)
 
     def test_recent_pages_newest_first(self):
+        import time as _time
         self.idx.add_page("https://old.com", "https://a.com", 0, {"x": 1})
+        _time.sleep(0.05)   # ensure distinct indexed_at timestamps
         self.idx.add_page("https://new.com", "https://a.com", 0, {"x": 1})
         recent = self.idx.recent_pages(2)
         self.assertEqual(recent[0]["url"], "https://new.com")

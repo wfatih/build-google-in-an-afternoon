@@ -5,20 +5,23 @@ No external web frameworks (no Flask, Django, FastAPI).
 
 Endpoints
 ---------
-GET  /                  HTML single-page dashboard
-GET  /api/stats         JSON — live crawler + index statistics
-GET  /api/recent        JSON — recently indexed pages
-GET  /api/sessions      JSON — crawl session history list
-GET  /api/sessions/<id> JSON — session detail: pages + failures
-POST /api/index         JSON body {url, depth, workers, rate, max_queue,
-                                   same_domain} → start crawl
-POST /api/search        JSON body {query, limit} → search results
+GET  /                        HTML single-page dashboard
+GET  /search?query=X&sortBy=relevance
+                              JSON — scored search results (relevance_score field)
+GET  /api/stats               JSON — live crawler + index statistics
+GET  /api/recent              JSON — recently indexed pages
+GET  /api/export              JSON — export word_index to data/storage/p.data
+GET  /api/sessions            JSON — crawl session history list
+GET  /api/sessions/<id>       JSON — session detail: pages + failures
+POST /api/index               JSON body {url, depth, workers, rate, max_queue,
+                                         same_domain} → start crawl
+POST /api/search              JSON body {query, limit} → search results
 """
 
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 from typing import Optional
 
 
@@ -396,13 +399,22 @@ class _Handler(BaseHTTPRequestHandler):
     # ── Routing ──────────────────────────────────────────────────────────────
 
     def do_GET(self):
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         if path == "/":
             self._send_html(_HTML)
+        elif path == "/search":
+            # GET /search?query=<word>&sortBy=relevance
+            qs = parse_qs(parsed.query)
+            query = qs.get("query", [""])[0].strip()
+            sort_by = qs.get("sortBy", ["relevance"])[0]
+            self._send_json(self._search_get(query, sort_by))
         elif path == "/api/stats":
             self._send_json(self._stats())
         elif path == "/api/recent":
             self._send_json(self._recent())
+        elif path == "/api/export":
+            self._send_json(self._export_pdata())
         elif path == "/api/sessions":
             self._send_json(self._sessions())
         elif path.startswith("/api/sessions/"):
@@ -549,6 +561,40 @@ class _Handler(BaseHTTPRequestHandler):
             ],
         }
 
+    def _search_get(self, query: str, sort_by: str = "relevance") -> dict:
+        """
+        Handle GET /search?query=<word>&sortBy=relevance
+
+        Scoring formula: score = (frequency × 10) + 1000 (exact match) - (depth × 5)
+        """
+        if not query:
+            return {"results": [], "error": "query is required"}
+
+        idx = _Handler.index_store
+        if not idx:
+            return {"query": query, "total": 0, "results": []}
+
+        results = idx.search_scored(query)
+        return {
+            "query": query,
+            "total": len(results),
+            "results": [
+                {"url": u, "origin": o, "depth": d, "relevance_score": s}
+                for u, o, d, s in results
+            ],
+        }
+
+    def _export_pdata(self) -> dict:
+        """Export word_index to <db_dir>/storage/p.data (plain text)."""
+        idx = _Handler.index_store
+        if not idx:
+            return {"error": "No index available"}
+        import os
+        db_dir = os.path.dirname(os.path.abspath(idx._path))
+        pdata_path = os.path.join(db_dir, "storage", "p.data")
+        count = idx.export_pdata(pdata_path)
+        return {"ok": True, "entries": count, "path": os.path.abspath(pdata_path)}
+
     def _pause(self) -> dict:
         c = _Handler.crawler_instance
         if not c:
@@ -583,7 +629,7 @@ class WebServer:
     so the dashboard's polling never blocks active crawl workers.
     """
 
-    def __init__(self, index_store, host: str = "localhost", port: int = 8080):
+    def __init__(self, index_store, host: str = "localhost", port: int = 3600):
         _Handler.index_store = index_store
         _Handler.crawler_instance = None
         self._host = host

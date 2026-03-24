@@ -9,7 +9,7 @@ A concurrent web crawler and inverted-index search engine built with **Python's 
 ```bash
 # 1. Start the web UI (recommended)
 python main.py server
-# Open http://localhost:8080
+# Open http://localhost:3600
 
 # 2. Or use the CLI
 python main.py index https://en.wikipedia.org/wiki/Python 2 --dashboard
@@ -23,7 +23,7 @@ No `pip install` needed. Python 3.10+ required.
 
 ## Web UI
 
-Start with `python main.py server` and open **http://localhost:8080**.
+Start with `python main.py server` and open **http://localhost:3600**.
 
 ### Crawler panel
 
@@ -194,8 +194,10 @@ failed_urls    (id PK, session_id, url, error, failed_at)
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/` | Single-page web UI |
+| `GET` | `/search?query=X&sortBy=relevance` | Scored search — returns `relevance_score` per result |
 | `GET` | `/api/stats` | Live crawler + index statistics |
 | `GET` | `/api/recent` | Last 10 indexed pages |
+| `GET` | `/api/export` | Export word index to `data/storage/p.data` (plaintext) |
 | `GET` | `/api/sessions` | All crawl session records |
 | `GET` | `/api/sessions/<id>` | Session detail: indexed pages + failed URLs |
 | `POST` | `/api/index` | Start a crawl `{url, depth, workers, rate, max_queue, same_domain}` |

@@ -180,8 +180,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     # server
-    ps = sub.add_parser("server", help="Start the web UI (default: localhost:8080)")
-    ps.add_argument("--port", type=int, default=8080)
+    ps = sub.add_parser("server", help="Start the web UI (default: localhost:3600)")
+    ps.add_argument("--port", type=int, default=3600)
 
     # index
     pi = sub.add_parser("index", help="Crawl from a URL to depth k (CLI mode)")

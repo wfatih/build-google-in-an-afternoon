@@ -131,6 +131,85 @@ class InvertedIndex(_ThreadLocalDB):
         rows = self._conn().execute(sql, params).fetchall()
         return [(r["url"], r["origin"], r["depth"]) for r in rows]
 
+    def search_scored(self, query: str,
+                      partial: bool = False) -> List[Tuple[str, str, int, int]]:
+        """
+        Return ranked list of (url, origin, depth, relevance_score).
+
+        Scoring formula (assignment spec)
+        -----------------------------------
+        score = (frequency × 10) + 1000 (exact match bonus) - (depth × 5)
+
+        partial=False (default): exact-word matches only.  Each matching word
+        contributes (freq × 10) + 1000 - (depth × 5).  The formula applied
+        per entry matches the manually-calculable formula exactly.
+
+        partial=True: also includes prefix matches (word LIKE query%).  Prefix
+        hits do not receive the +1000 exact-match bonus.  Scores will be
+        slightly higher than a manual exact-only calculation.
+        """
+        words = tokenize(query)
+        if not words:
+            return []
+
+        exact_ph = ",".join("?" * len(words))
+
+        if not partial:
+            # Exact-only: formula = (freq × 10) + 1000 - (depth × 5)
+            sql = f"""
+                SELECT url, origin, depth,
+                       SUM(
+                           (frequency * 10) + 1000 - (depth * 5)
+                       ) AS score
+                FROM word_index
+                WHERE word IN ({exact_ph})
+                GROUP BY url
+                ORDER BY score DESC
+            """
+            rows = self._conn().execute(sql, words).fetchall()
+            return [(r["url"], r["origin"], r["depth"], r["score"]) for r in rows]
+
+        # Partial: exact (×1000 bonus) + prefix (no bonus)
+        like_clauses = " OR ".join("word LIKE ?" for _ in words)
+        like_params = [w + "%" for w in words]
+
+        sql = f"""
+            SELECT url, origin, depth,
+                   SUM(
+                       (frequency * 10) +
+                       CASE WHEN word IN ({exact_ph}) THEN 1000 ELSE 0 END -
+                       (depth * 5)
+                   ) AS score
+            FROM word_index
+            WHERE word IN ({exact_ph}) OR {like_clauses}
+            GROUP BY url
+            ORDER BY score DESC
+        """
+        # params order: exact (for CASE), exact (for WHERE IN), like patterns
+        params = words + words + like_params
+        rows = self._conn().execute(sql, params).fetchall()
+        return [(r["url"], r["origin"], r["depth"], r["score"]) for r in rows]
+
+    def export_pdata(self, path: str) -> int:
+        """
+        Export the entire word_index to a plain-text p.data file.
+
+        Format (one entry per line, space-separated):
+            word  url  origin  depth  frequency
+
+        Returns the number of entries written.
+        """
+        import os
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        rows = self._conn().execute(
+            "SELECT word, url, origin, depth, frequency "
+            "FROM word_index ORDER BY word, url"
+        ).fetchall()
+        with open(path, "w", encoding="utf-8") as f:
+            for r in rows:
+                f.write(f"{r['word']} {r['url']} {r['origin']} {r['depth']} {r['frequency']}\n")
+        return len(rows)
+
     def page_count(self) -> int:
         return self._conn().execute("SELECT COUNT(*) FROM pages").fetchone()[0]
 
