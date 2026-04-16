@@ -1,6 +1,10 @@
-# Web Crawler & Search Engine
+# build-google-in-an-afternoon
+
+**Fatih Çakır · 150220086 · AI Aided Computer Engineering — ITU**
 
 A concurrent web crawler and inverted-index search engine built with **Python's standard library only** — no Scrapy, BeautifulSoup, Flask, or requests.
+
+> Built using a **multi-agent AI workflow** — see [`multi_agent_workflow.md`](multi_agent_workflow.md) for the full agent breakdown, prompts, and decision log. Individual agent specs are in [`agents/`](agents/).
 
 ---
 

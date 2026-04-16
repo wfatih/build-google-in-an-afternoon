@@ -28,7 +28,7 @@
 % ── listings style ────────────────────────────────────────────────────────────
 \lstdefinestyle{inline}{
   backgroundcolor=\color{codegray},
-  basicstyle=\ttfamily\footnotesize,
+  basicstyle=\ttfamily\scriptsize,
   breaklines=true,
   breakatwhitespace=false,
   columns=flexible,
@@ -56,7 +56,7 @@
 % ── header / footer ───────────────────────────────────────────────────────────
 \pagestyle{fancy}
 \fancyhf{}
-\lhead{\small\textcolor{gray}{Mini-Google — Web Crawler \& Search Engine}}
+\lhead{\small\textcolor{gray}{build-google-in-an-afternoon — Web Crawler \& Search Engine}}
 \rhead{\small\textcolor{gray}{Fatih Çakır \ 150220086}}
 \cfoot{\thepage}
 \renewcommand{\headrulewidth}{0.4pt}
@@ -79,7 +79,7 @@
 
 % ── title ─────────────────────────────────────────────────────────────────────
 \begin{center}
-  {\LARGE\bfseries\color{accent} Mini-Google Quiz 1}\\[6pt]
+  {\LARGE\bfseries\color{accent} build-google-in-an-afternoon — Quiz 1}\\[6pt]
   {\large Web Crawler \& Search Engine}\\[4pt]
   {\normalsize Istanbul Technical University — AI Aided Computer Engineering}\\[6pt]
   \begin{tabular}{rl}
@@ -187,9 +187,9 @@ GET http://localhost:3600/search?query=python&sortBy=relevance
 \textbf{Write down the \#1 result's URL and relevance\_score:}
 
 \begin{answerbox}
-\begin{tabular}{@{} l p{11cm}}
+\begin{tabular}{@{} l p{10cm}}
   \textbf{URL:} &
-  \texttt{https://en.wikipedia.org/wiki/Python\_(programming\_language)} \\[4pt]
+  \url{https://en.wikipedia.org/wiki/Python_(programming_language)} \\[4pt]
   \textbf{relevance\_score:} & \textbf{6420} \\
 \end{tabular}
 \end{answerbox}
@@ -239,17 +239,17 @@ The $+1000$ bonus applies \textbf{only for exact matches} (indexed word $=$ quer
 
 \medskip
 \begin{center}
-\begin{tabular}{lcc}
+\small
+\begin{tabular}{@{} l p{10cm} @{}}
   \toprule
-  & \textbf{Manual} & \textbf{API} \\
-  \midrule
-  \textbf{\#1 URL}   &
-    \texttt{.../Python\_(programming\_language)} &
-    \texttt{.../Python\_(programming\_language)} \\
-  \textbf{Score} & 6420 & 6420 \\
+  \textbf{\#1 URL (Manual = API):} &
+    \url{https://en.wikipedia.org/wiki/Python_(programming_language)} \\[4pt]
+  \textbf{Manual score:} & 6420 \\
+  \textbf{API score:}    & 6420 \\
   \bottomrule
 \end{tabular}
 \end{center}
+\normalsize
 
 \medskip
 Both the URL and the exact numeric score match perfectly.

@@ -1,9 +1,14 @@
 # Product Requirements Document — Web Crawler & Search Engine
 
-**Project:** Web Crawler & Search Engine
-**Version:** 3.0
-**Date:** 2026-03-18
+**Project:** build-google-in-an-afternoon
+**Version:** 4.0
+**Date:** 2026-04-16
 **Course:** AI Aided Computer Engineering — Istanbul Technical University
+**Student:** Fatih Çakır, 150220086
+
+> This PRD was produced by **ArchitectAgent** as the first step in the multi-agent
+> development workflow. It serves as the shared contract for all downstream agents.
+> See [`multi_agent_workflow.md`](multi_agent_workflow.md) for the full workflow.
 
 ---
 
